@@ -1,0 +1,15 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticatedUser(userId) {
+      return request.auth.uid == userId;
+    }
+
+    match /users/{userId} {
+      match /minutely_desktop_activities/{minute} {
+        allow read, create: if isAuthenticatedUser(userId);
+      }
+    }
+  }
+}
