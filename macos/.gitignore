@@ -4,3 +4,5 @@
 
 # Xcode-related
 **/xcuserdata/
+
+Runner/GoogleService-Info.plist
