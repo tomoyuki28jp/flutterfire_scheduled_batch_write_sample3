@@ -1,6 +1,10 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:sample3/auth_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -36,84 +40,125 @@ class HomePage extends StatelessWidget {
         } else if (snap.data?.uid == null) {
           return AuthPage();
         } else {
-          return const Text('tracking....');
+          return const ActivityTracker();
         }
       },
     ));
   }
 }
 
-class AuthPage extends StatefulWidget {
-  const AuthPage({Key? key}) : super(key: key);
+CollectionReference<MinutelyActivity> _minutelyActivitiesRef(String uid) =>
+    FirebaseFirestore.instance
+        .collection('users/$uid/minutely_desktop_activities')
+        .withConverter<MinutelyActivity>(
+            fromFirestore: (snapshots, _) =>
+                MinutelyActivity.fromJson(snapshots.data()!),
+            toFirestore: (model, _) => model.toJson()
+              ..addAll(
+                  <String, Object>{'created': FieldValue.serverTimestamp()}));
 
-  @override
-  _AuthPageState createState() => _AuthPageState();
+Future<void> addMinutelyActivities(
+    String uid, Map<DateTime, MinutelyActivity> activities) {
+  final collectionRef = _minutelyActivitiesRef(uid);
+  final batch = FirebaseFirestore.instance.batch();
+  activities.forEach((min, activity) {
+    final docRef = collectionRef.doc(min.toUtc().toIso8601String());
+    batch.set(docRef, activity);
+    debugPrint('add min activity: $min');
+  });
+  return batch.commit();
 }
 
-class _AuthPageState extends State<AuthPage> {
-  final _formKey = GlobalKey<FormState>();
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
+class MinutelyActivity {
+  const MinutelyActivity(
+      {required this.beginningOfMinute, this.activeSeconds = const <int>[]});
+  final DateTime beginningOfMinute;
+  final List<int> activeSeconds;
+
+  MinutelyActivity.fromJson(Map<String, Object?> json)
+      : this(
+            beginningOfMinute:
+                (json['beginningOfMinute']! as Timestamp).toDate(),
+            activeSeconds: (json['activeSeconds']! as List<int>));
+
+  Map<String, Object?> toJson() {
+    return {
+      'beginningOfMinute': Timestamp.fromDate(beginningOfMinute),
+      'activeSeconds': activeSeconds
+    };
+  }
+}
+
+class ActivityTracker extends StatefulWidget {
+  const ActivityTracker({Key? key}) : super(key: key);
+
+  @override
+  _ActivityTrackerState createState() => _ActivityTrackerState();
+}
+
+class _ActivityTrackerState extends State<ActivityTracker> {
+  Map<DateTime, MinutelyActivity> _activities = {};
+  late Timer _timer;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
+  }
 
   @override
   void dispose() {
-    _emailController.dispose();
-    _passwordController.dispose();
+    _timer.cancel();
     super.dispose();
   }
 
-  Future<User?> _submit() async {
-    if (_formKey.currentState?.validate() != true) {
-      return null;
+  static DateTime _beginningOfMinute(DateTime date) =>
+      DateTime(date.year, date.month, date.day, date.hour, date.minute);
+
+  Future<void> _update() async {
+    final now = DateTime.now();
+    final beginningOfMinute = _beginningOfMinute(now);
+    setState(() {
+      if (_activities[beginningOfMinute] == null) {
+        _activities[beginningOfMinute] = MinutelyActivity(
+            beginningOfMinute: beginningOfMinute, activeSeconds: [now.second]);
+      } else {
+        _activities[beginningOfMinute]!.activeSeconds.add(now.second);
+      }
+    });
+
+    final savingActivities = <DateTime, MinutelyActivity>{};
+    final remainingActivities = <DateTime, MinutelyActivity>{};
+    _activities.forEach((min, activity) {
+      if (min.isBefore(beginningOfMinute)) {
+        savingActivities[min] = activity;
+      } else {
+        remainingActivities[min] = activity;
+      }
+    });
+
+    if (savingActivities.isEmpty || _saving) {
+      return;
     }
+
+    _saving = true;
     try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
-          email: _emailController.text, password: _passwordController.text);
-    } on FirebaseAuthException catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(e.code)));
+      await addMinutelyActivities(
+          FirebaseAuth.instance.currentUser!.uid, savingActivities);
+      setState(() {
+        _activities = remainingActivities;
+      });
+    } on Exception catch (e) {
+      print(e);
+      rethrow;
+    } finally {
+      _saving = false;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-        alignment: Alignment.topCenter,
-        child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            constraints: const BoxConstraints(
-              maxWidth: 500,
-            ),
-            child: SingleChildScrollView(
-                child: Column(
-              children: [
-                const SizedBox(height: 32),
-                _form(),
-              ],
-            ))));
-  }
-
-  Widget _form() {
-    return Form(
-        key: _formKey,
-        child: Column(children: [
-          TextFormField(
-            controller: _emailController,
-            autofocus: true,
-            decoration: const InputDecoration(
-                labelText: 'Email', labelStyle: TextStyle(height: 0.1)),
-            validator: (val) => val?.isEmpty == true ? 'cannot be empty' : null,
-          ),
-          const SizedBox(height: 24),
-          TextFormField(
-            controller: _passwordController,
-            decoration: const InputDecoration(
-                labelText: 'Password', labelStyle: TextStyle(height: 0.1)),
-            validator: (val) => val?.isEmpty == true ? 'cannot be empty' : null,
-            obscureText: true,
-          ),
-          const SizedBox(height: 32),
-          TextButton(onPressed: _submit, child: Text('Login'))
-        ]));
+    return Container(child: const Text('Tracking...'));
   }
 }
