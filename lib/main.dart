@@ -57,18 +57,6 @@ CollectionReference<MinutelyActivity> _minutelyActivitiesRef(String uid) =>
               ..addAll(
                   <String, Object>{'created': FieldValue.serverTimestamp()}));
 
-Future<void> addMinutelyActivities(
-    String uid, Map<DateTime, MinutelyActivity> activities) {
-  final collectionRef = _minutelyActivitiesRef(uid);
-  final batch = FirebaseFirestore.instance.batch();
-  activities.forEach((min, activity) {
-    final docRef = collectionRef.doc(min.toUtc().toIso8601String());
-    batch.set(docRef, activity);
-    debugPrint('add min activity: $min');
-  });
-  return batch.commit();
-}
-
 class MinutelyActivity {
   const MinutelyActivity(
       {required this.beginningOfMinute, this.activeSeconds = const <int>[]});
@@ -104,7 +92,7 @@ class _ActivityTrackerState extends State<ActivityTracker> {
   @override
   void initState() {
     super.initState();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
+    _timer = Timer.periodic(const Duration(seconds: 5), (_) => _update());
   }
 
   @override
@@ -128,26 +116,37 @@ class _ActivityTrackerState extends State<ActivityTracker> {
       }
     });
 
-    final savingActivities = <DateTime, MinutelyActivity>{};
-    final remainingActivities = <DateTime, MinutelyActivity>{};
-    _activities.forEach((min, activity) {
-      if (min.isBefore(beginningOfMinute)) {
-        savingActivities[min] = activity;
-      } else {
-        remainingActivities[min] = activity;
-      }
-    });
-
-    if (savingActivities.isEmpty || _saving) {
+    if (_saving) {
       return;
     }
 
     _saving = true;
     try {
-      await addMinutelyActivities(
-          FirebaseAuth.instance.currentUser!.uid, savingActivities);
-      setState(() {
-        _activities = remainingActivities;
+      final col =
+          _minutelyActivitiesRef(FirebaseAuth.instance.currentUser!.uid);
+      _activities.forEach((min, activity) {
+        final id = min.toUtc().toIso8601String();
+        final doc = col.doc(id);
+        if (min.isBefore(beginningOfMinute)) {
+          debugPrint('add min activity: $min');
+          doc.set(activity).then((_) {
+            setState(() {
+              _activities.remove(min);
+              _activities = _activities;
+            });
+          }).catchError((e) async {
+            // workaround: created doc keep throwing a permission-denied error
+            if ((await doc.get()).exists) {
+              debugPrint('workaround');
+              setState(() {
+                _activities.remove(min);
+                _activities = _activities;
+              });
+            } else {
+              print(e);
+            }
+          });
+        }
       });
     } on Exception catch (e) {
       print(e);
